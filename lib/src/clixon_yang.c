@@ -526,10 +526,29 @@ yang_when_get(clixon_handle h,
     size_t       len = _yang_when_map_len;
     yang_stmt   *ys2;
 
+    /* First look for a when set directly on this node (important when a uses-copy
+     * got its own when to avoid leaking it via ys_orig).
+     */
+    ys2 = ys;
+    if (yang_flag_get(ys2, YANG_FLAG_WHEN) != 0x0 && mp != NULL) {
+        yang_stmt *w = clixon_ptr2ptr(mp, len, ys2);
+        if (w != NULL)
+            return w;
+    }
+
+    /* Fall back to the original node (common case). */
     if ((ys2 = yang_orig_get(ys)) == NULL)
         ys2 = ys;
-    if (yang_flag_get(ys2, YANG_FLAG_WHEN) != 0x0 && mp != NULL)
-        return clixon_ptr2ptr(mp, len, ys2);
+    if (yang_flag_get(ys2, YANG_FLAG_WHEN) != 0x0 && mp != NULL) {
+        /* Only use orig mapping if it belongs to the same real module as the copy.
+         * Prevents a when set on a per-module uses-copy from leaking into other
+         * modules that share the grouping definition.
+         */
+        yang_stmt *m0 = ys_module(ys);
+        yang_stmt *m1 = ys_module(ys2);
+        if (m0 && m1 && m0 == m1)
+            return clixon_ptr2ptr(mp, len, ys2);
+    }
     return NULL;
 }
 
@@ -548,19 +567,30 @@ yang_when_set(clixon_handle h,
 {
     int          retval = -1;
     yang_stmt   *ys2;
-    map_ptr2ptr *mp = _yang_when_map;
-    size_t       len = _yang_when_map_len;
+    yang_stmt   *ysorig;
 
-    if ((ys2 = yang_orig_get(ys)) == NULL)
-        ys2 = ys;
-    if (clixon_ptr2ptr(mp, len, ys2) == NULL) {
-        assert(yang_flag_set(ys2, YANG_FLAG_WHEN)==0); // XXX
-        if (clixon_ptr2ptr_add(&_yang_when_map, &_yang_when_map_len, ys2, ywhen) < 0)
+    ysorig = yang_orig_get(ys);
+    /* Always attach to the concrete copy */
+    if (clixon_ptr2ptr(_yang_when_map, _yang_when_map_len, ys) == NULL) {
+        if (clixon_ptr2ptr_add(&_yang_when_map, &_yang_when_map_len, ys, ywhen) < 0)
             goto done;
-        yang_flag_set(ys2, YANG_FLAG_WHEN);
+        yang_flag_set(ys, YANG_FLAG_WHEN);
     }
-    else
-        assert(yang_flag_set(ys2, YANG_FLAG_WHEN) == 0); // XXX
+    /* Optionally mirror to origin when it belongs to the same real module.
+     * Avoids leaking module-specific when guards across modules sharing a grouping.
+     */
+    if (ysorig) {
+        yang_stmt *m0 = ys_module(ys);
+        yang_stmt *m1 = ys_module(ysorig);
+        if (m0 && m1 && m0 == m1) {
+            ys2 = ysorig;
+            if (clixon_ptr2ptr(_yang_when_map, _yang_when_map_len, ys2) == NULL) {
+                if (clixon_ptr2ptr_add(&_yang_when_map, &_yang_when_map_len, ys2, ywhen) < 0)
+                    goto done;
+                yang_flag_set(ys2, YANG_FLAG_WHEN);
+            }
+        }
+    }
     retval = 0;
  done:
     return retval;
