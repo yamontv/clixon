@@ -590,6 +590,7 @@ yang_expand_uses_node(clixon_handle h,
     int        k;
     yang_stmt *ywhen;
     int        inext;
+    int        in_grouping;
 
     /* Split argument into prefix and name */
     if (nodeid_split(yang_argument_get(ys), &prefix, &id) < 0)
@@ -637,6 +638,15 @@ yang_expand_uses_node(clixon_handle h,
     }
     /* Find when statement, if present */
     ywhen = yang_find(ys, Y_WHEN, NULL);
+    /* Check if this uses is defined under a grouping (vs inline in a module) */
+    in_grouping = 0;
+    yp = ys;
+    while ((yp = yang_parent_get(yp)) != NULL) {
+        if (yang_keyword_get(yp) == Y_GROUPING) {
+            in_grouping = 1;
+            break;
+        }
+    }
     /* Make a copy of the grouping, then make refinements to this copy
      * Note this ygrouping2 object does not have a parent and does not work in many
      * functions which assume a full hierarchy, use the original ygrouping in those cases.
@@ -752,6 +762,16 @@ yang_expand_uses_node(clixon_handle h,
             }
             if (yang_when_set(h, yg, ywhen) < 0)
                 goto done;
+            /* If the uses is inside a grouping definition, also store the guard on the
+             * original node so later instantiations of the grouping inherit it.
+             */
+            if (in_grouping) {
+                yang_stmt *yorig = yang_orig_get(yg);
+                if (yorig && yang_flag_get(yorig, YANG_FLAG_WHEN) == 0) {
+                    if (yang_when_set(h, yorig, ywhen) < 0)
+                        goto done;
+                }
+            }
         }
         /* This is for extensions that allow list keys to be optional, see restconf_main_extension_cb */
         if (yang_flag_get(ys, YANG_FLAG_NOKEY))
