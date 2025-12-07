@@ -584,8 +584,18 @@ validate_leafref(cxobj     *xt,
     }
     if ((leafrefbody = xml_body(xt)) == NULL)
         goto ok;
+    clixon_debug(CLIXON_DBG_YANG, "leafref validate: yt=%s ytype=%s body=%s",
+                 yang_argument_get(yt)?yang_argument_get(yt):"(nil)",
+                 yang_argument_get(ytype)?yang_argument_get(ytype):"(nil)",
+                 leafrefbody);
+    clixon_debug(CLIXON_DBG_YANG, "yt orig=%p ytype orig=%p",
+                 yang_orig_get(yt), yang_orig_get(ytype));
     if (xml_nsctx_yang(yt, &nsc) < 0)
         goto done;
+    {
+        char *nsfoo = xml_nsctx_get(nsc, "foo");
+        clixon_debug(CLIXON_DBG_YANG, "nsc after yt: foo=%s", nsfoo?nsfoo:"(nil)");
+    }
 #ifdef LEAFREF_OPTIMIZE
     if (yt == leafref_opt.lc_cache_yang &&
          leafref_opt.lc_cache_x0){
