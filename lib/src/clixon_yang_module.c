@@ -517,6 +517,96 @@ clixon_module_upgrade(clixon_handle    h,
     goto done;
 }
 
+/*! Iterate over all import statements in a module and its belongs-to submodules
+ *
+ * @param[in]  ymod   Module or submodule
+ * @param[in]  yspec  Yang spec root
+ * @param[in]  cb     Callback invoked for each Y_IMPORT node
+ * @param[in]  arg    Callback argument
+ * @retval     0      OK (all callbacks returned 0)
+ * @retval    >0      Callback returned this value (early exit)
+ * @retval    -1      Error
+ */
+int
+yang_imports_foreach_module(yang_stmt *ymod,
+                            yang_stmt *yspec,
+                            int (*cb)(yang_stmt *yimport, void *arg),
+                            void *arg)
+{
+    int retval = -1;
+    int inext;
+    int inext2;
+    int ret;
+    yang_stmt *y;
+    yang_stmt *ybel;
+    yang_stmt *yimp;
+    yang_stmt *yrealmod = NULL;
+    char *bname;
+
+    if (ymod == NULL || yspec == NULL || cb == NULL)
+        goto done;
+    if (ys_real_module(ymod, &yrealmod) < 0)
+        goto done;
+    /* Imports on the resolved real module */
+    inext = 0;
+    while ((y = yn_iter(yrealmod, &inext)) != NULL) {
+        if (yang_keyword_get(y) != Y_IMPORT)
+            continue;
+        if ((ret = cb(y, arg)) != 0) {
+            retval = ret;
+            goto done;
+        }
+    }
+    /* Imports on any submodule belonging to this module */
+    inext = 0;
+    while ((y = yn_iter(yspec, &inext)) != NULL) {
+        if (yang_keyword_get(y) != Y_SUBMODULE)
+            continue;
+        if ((ybel = yang_find(y, Y_BELONGS_TO, NULL)) == NULL)
+            continue;
+        if ((bname = yang_argument_get(ybel)) == NULL)
+            continue;
+        if (strcmp(bname, yang_argument_get(yrealmod)) != 0)
+            continue;
+        inext2 = 0;
+        while ((yimp = yn_iter(y, &inext2)) != NULL) {
+            if (yang_keyword_get(yimp) != Y_IMPORT)
+                continue;
+            if ((ret = cb(yimp, arg)) != 0) {
+                retval = ret;
+                goto done;
+            }
+        }
+    }
+    retval = 0;
+done:
+    return retval;
+}
+
+/* Context for matching an import by prefix and capturing its module */
+struct import_prefix_ctx {
+    const char *target;
+    yang_stmt *yspec;
+    yang_stmt *found;
+};
+
+/*! Callback used by yang_imports_foreach_module: match import prefix and capture module */
+static int
+import_match_prefix_cb(yang_stmt *yimport, void *arg)
+{
+    struct import_prefix_ctx *c = arg;
+    yang_stmt *yprefix;
+
+    if ((yprefix = yang_find(yimport, Y_PREFIX, NULL)) == NULL)
+        return 0;
+    if (strcmp(yang_argument_get(yprefix), c->target) != 0)
+        return 0;
+    c->found = yang_find(c->yspec, Y_MODULE, yang_argument_get(yimport));
+    if (c->found == NULL)
+        return 0;
+    return 1; /* stop */
+}
+
 /*! Given a yang statement and a prefix, return yang module to that relative prefix
  *
  * Note, not the other module but the proxy import statement only
@@ -540,6 +630,7 @@ yang_find_module_by_prefix(yang_stmt  *ys,
     yang_stmt *yspec;
     char      *myprefix;
     int        inext;
+    struct import_prefix_ctx ctx;
 
     if ((yspec = ys_spec(ys)) == NULL){
         clixon_err(OE_YANG, 0, "My yang spec not found");
@@ -570,6 +661,17 @@ yang_find_module_by_prefix(yang_stmt  *ys,
             yimport = NULL;
             goto done; /* unresolved */
         }
+    } else {
+        ctx.target = prefix;
+        ctx.yspec = yspec;
+        ctx.found = NULL;
+        /* Then search imports on the real module (or submodule) and its submodules */
+        if (yang_imports_foreach_module(my_ymod, yspec,
+                                        import_match_prefix_cb,
+                                        &ctx) < 0)
+            goto done;
+        if (ctx.found)
+            ymod = ctx.found;
     }
  done:
     return ymod;
