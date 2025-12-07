@@ -91,6 +91,27 @@
 #include "clixon_yang_schema_mount.h"
 #include "clixon_yang_internal.h" /* internal included by this file only, not API */
 
+/* Context for matching an import by module name and capturing its prefix */
+struct import_mod_ctx {
+    const char *modname;
+    const char *prefix;
+};
+
+/* Callback for yang_imports_foreach_module: match import by module name and capture prefix */
+static int
+import_match_module_cb(yang_stmt *yimport, void *arg)
+{
+    struct import_mod_ctx *c = arg;
+    yang_stmt *yprefix;
+
+    if (strcmp(c->modname, yang_argument_get(yimport)) != 0)
+        return 0;
+    if ((yprefix = yang_find(yimport, Y_PREFIX, NULL)) == NULL)
+        return 0;
+    c->prefix = yang_argument_get(yprefix);
+    return 1; /* stop */
+}
+
 #ifdef XML_EXPLICIT_INDEX
 static int yang_search_index_extension(clixon_handle h, yang_stmt *yext, yang_stmt *ys);
 #endif
@@ -1847,6 +1868,7 @@ yang_find_prefix_by_namespace(yang_stmt  *ys,
     yang_stmt *yimport;
     yang_stmt *yprefix;
     int        inext;
+    struct import_mod_ctx ctx;
 
     clixon_debug(CLIXON_DBG_YANG | CLIXON_DBG_DETAIL, "namespace %s", ns);
     if (prefix == NULL){
@@ -1875,6 +1897,17 @@ yang_find_prefix_by_namespace(yang_stmt  *ys,
             *prefix = yang_argument_get(yprefix);
             goto found;
         }
+    }
+    /* If not found, also check submodules belonging to my real module for imports */
+    ctx.modname = modname;
+    ctx.prefix = NULL;
+    if (yang_imports_foreach_module(my_ymod, yspec,
+                                    import_match_module_cb,
+                                    &ctx) < 0)
+        goto done;
+    if (ctx.prefix){
+        *prefix = (char*)ctx.prefix;
+        goto found;
     }
  notfound:
     retval = 0; /* not found */
