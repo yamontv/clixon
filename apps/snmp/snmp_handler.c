@@ -62,6 +62,7 @@
 #include "banned.h"
 
 struct snmp_getnext_cache {
+    struct snmp_getnext_cache *sg_next;
     cxobj         *sg_xml;
     char          *sg_xpath;
     struct timeval sg_timer;
@@ -1160,10 +1161,9 @@ snmp_table_set(clixon_handle               h,
  * - xpath     Of the requested YANG
  * - xml tree  Saved from previous rpc to this xpath
  * - timestamp Time of last rpc call for this xpath
- * On a new call, the cache is used if:
- * - the cache exist, and
- * - the xpath is the same as the requested xpath, and
- * - the age of the cache entry is less than a threshold
+ * Each XPath has its own entry so walking across empty tables does not evict
+ * another table's cached result. The table handlers supply schema-derived paths.
+ * An entry is reused while its age is less than the refresh threshold.
  * @param[in]  h      Clixon handle
  * @param[in]  xpath  XPath of requetsed YANG
  * @param[in]  nsc    Namespace context
@@ -1185,29 +1185,38 @@ table_getnext_cache(clixon_handle h,
     struct timeval             now;
     struct timeval             td;
     struct snmp_getnext_cache *sg = NULL;
+    struct snmp_getnext_cache *head = NULL;
 
-    clicon_ptr_get(h, "snmp-getnext-cache", (void**)&sg);
+    clicon_ptr_get(h, "snmp-getnext-cache", (void**)&head);
+    for (sg = head; sg; sg = sg->sg_next)
+        if (strcmp(xpath, sg->sg_xpath) == 0)
+            break;
     if (sg == NULL){
         if ((sg = calloc(1, sizeof(*sg))) == NULL){
             clixon_err(OE_UNIX, errno, "calloc");
             goto done;
         }
-        clicon_ptr_set(h, "snmp-getnext-cache", sg);
+        if ((sg->sg_xpath = strdup(xpath)) == NULL){
+            clixon_err(OE_UNIX, errno, "strdup");
+            free(sg);
+            goto done;
+        }
+        sg->sg_next = head;
+        if (clicon_ptr_set(h, "snmp-getnext-cache", sg) < 0){
+            free(sg->sg_xpath);
+            free(sg);
+            goto done;
+        }
     }
     if (timerisset(&sg->sg_timer)){
         gettimeofday(&now, NULL);
         timersub(&now, &sg->sg_timer, &td);
         tdiff_us = 1000000*td.tv_sec + td.tv_usec;
     }
-    if (sg->sg_xml == NULL || sg->sg_xpath == NULL ||
-        strcmp(xpath, sg->sg_xpath) != 0 || tdiff_us > 1000000){ // gettime
+    if (sg->sg_xml == NULL || tdiff_us > GETNEXT_THRESHOLD_US){
         if (sg->sg_xml){
             xml_free(sg->sg_xml);
             sg->sg_xml = NULL;
-        }
-        if (sg->sg_xpath){
-            free(sg->sg_xpath);
-            sg->sg_xpath = NULL;
         }
         if (clicon_rpc_get(h, xpath, nsc, CONTENT_ALL, -1, NULL, &xt) < 0)
             goto done;
@@ -1216,10 +1225,6 @@ table_getnext_cache(clixon_handle h,
             goto done;
         }
         gettimeofday(&sg->sg_timer, NULL);
-        if ((sg->sg_xpath = strdup(xpath)) == NULL){
-            clixon_err(OE_UNIX, errno, "strdup");
-            goto done;
-        }
         sg->sg_xml = xt;
         xt = NULL;
     }
@@ -1514,13 +1519,17 @@ int
 clixon_snmp_table_exit(clixon_handle h)
 {
     struct snmp_getnext_cache *sg = NULL;
+    struct snmp_getnext_cache *next;
 
-    if (clicon_ptr_get(h, "snmp-getnext-cache", (void**)&sg) == 0 && sg){
+    clicon_ptr_get(h, "snmp-getnext-cache", (void**)&sg);
+    clicon_ptr_del(h, "snmp-getnext-cache");
+    while (sg){
+        next = sg->sg_next;
         if (sg->sg_xml)
             xml_free(sg->sg_xml);
-        if (sg->sg_xpath)
-            free(sg->sg_xpath);
+        free(sg->sg_xpath);
         free(sg);
+        sg = next;
     }
     return 0;
 }
